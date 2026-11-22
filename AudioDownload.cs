@@ -140,7 +140,7 @@ namespace YouTubeMp3
                     "--ffmpeg-location", Path.GetDirectoryName(tools.Encoder),
                     "--no-js-runtimes", "--js-runtimes", tools.JsRuntime,
                     "-f", "bestaudio/best", "--extract-audio", "--audio-format", "mp3",
-                    "--audio-quality", "0", "-P", stage, "-o", "%(title).120B [%(id)s].%(ext)s",
+                    "--audio-quality", "0", "--embed-metadata", "-P", stage, "-o", "%(title).120B [%(id)s].%(ext)s",
                     "--", "https://www.youtube.com/watch?v=" + link.Id
                 };
                 string path = Run(tools.Downloader, arguments, report, cancel);
