@@ -241,7 +241,8 @@ namespace YouTubeMp3
                 { "messages", new object[] { new { role = "system", content = system + FieldsHint(schema) }, new { role = "user", content = user } } },
                 { "response_format", format }
             };
-            object reply;
+            object reply = null;
+            bool strictRejected = false;
             try
             {
                 var strict = build(new { type = "json_schema", json_schema = new { name = "song_info", strict = true, schema = schema } });
@@ -250,6 +251,10 @@ namespace YouTubeMp3
             catch (ModelHttpException ex)
             {
                 if (ex.Status != 400) throw;
+                strictRejected = true;   // C# 5: no await inside catch, so retry below
+            }
+            if (strictRejected)
+            {
                 var loose = build(new { type = "json_object" });
                 reply = await SendAsync(() => Request(HttpMethod.Post, "chat/completions", loose), ClassifyTimeout, cancel).ConfigureAwait(false);
             }
