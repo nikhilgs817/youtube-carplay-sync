@@ -26,7 +26,6 @@ namespace YouTubeMp3
         private readonly PillButton clear = Theme.Button("Clear finished", 130);
         private readonly PillButton review = Theme.Button("Review & send", 180, true);
         private readonly PillButton installTools = Theme.Button("Install tools", 130, true);
-        private readonly PillButton copyGroup = Theme.Button("Copy group name", 150);
         private readonly PillButton dismiss = Theme.Button("Dismiss", 100);
         private readonly Notice banner = new Notice { Dock = DockStyle.Top, Visible = false };
         private readonly Label counts = new Label { AutoSize = true, Font = Theme.Body, ForeColor = Theme.Muted, UseMnemonic = false,
@@ -36,9 +35,9 @@ namespace YouTubeMp3
         private readonly Card reviewBar = new Card { Dock = DockStyle.Bottom, Visible = false };
         private readonly ToolChip chip = new ToolChip();
         private readonly RoundButton gear = new RoundButton("⚙") { AccessibleName = "Settings" };
+        private readonly RoundButton info = RoundButton.Info();
         private readonly ContextMenuStrip matches = new ContextMenuStrip();
         private readonly Image iconImage;
-        private readonly List<string> newGroups = new List<string>();
         private int resent;
         private string message;
 
@@ -112,7 +111,6 @@ namespace YouTubeMp3
 
             banner.Message.AutoEllipsis = false;
             banner.AddAction(dismiss);
-            banner.AddAction(copyGroup);
             banner.AddAction(installTools);
 
             Controls.Add(listHost);
@@ -123,7 +121,6 @@ namespace YouTubeMp3
             Controls.Add(BuildHeader());
 
             pipeline.Changed += RefreshAll;
-            pipeline.NewGroupAdded += group => { if (!newGroups.Contains(group)) newGroups.Add(group); RefreshBanner(); };
             add.Click += delegate { AddFromInput(); };
             loadTxt.Click += delegate { LoadTextFile(); };
             input.KeyDown += (sender, e) =>
@@ -135,9 +132,9 @@ namespace YouTubeMp3
             clear.Click += delegate { pipeline.ClearFinished(); };
             review.Click += delegate { OpenReview(null); };
             installTools.Click += async delegate { await InstallTools(); };
-            copyGroup.Click += delegate { if (newGroups.Count > 0) Clipboard.SetText(String.Join(Environment.NewLine, newGroups.ToArray())); };
-            dismiss.Click += delegate { newGroups.Clear(); resent = 0; pipeline.AppleMusicProblem = null; message = null; RefreshBanner(); };
+            dismiss.Click += delegate { resent = 0; pipeline.AppleMusicProblem = null; message = null; RefreshBanner(); };
             gear.Click += delegate { OpenSettings(); };
+            info.Click += delegate { InfoWindow.Open(this); };
             chip.Click += delegate { OpenSettings(); };
             list.RetryRequested += job => pipeline.Retry(job);
             list.RemoveRequested += job => pipeline.Remove(job);
@@ -180,6 +177,7 @@ namespace YouTubeMp3
                 Padding = new Padding(0, Theme.S(20), Theme.S(12), 0) };
             chip.Margin = new Padding(0, Theme.S(13), Theme.S(12), 0);
             tools.Controls.Add(chip);
+            tools.Controls.Add(info);
             tools.Controls.Add(gear);
             header.Controls.Add(tools);
             header.Controls.Add(brand);
@@ -247,7 +245,7 @@ namespace YouTubeMp3
             if (ToolManager.IsBusy) return;
             var tools = new DownloadTools();
             chip.Set(tools.Ready ? "Tools ready" : "Setup needed", tools.Ready ? Theme.Pass : Theme.Warn, tools.Ready ? PillShape.Circle : PillShape.Hollow);
-            installTools.Visible = copyGroup.Visible = dismiss.Visible = false;
+            installTools.Visible = dismiss.Visible = false;
             banner.Progress.Value = -2;
             if (!tools.Ready)
             {
@@ -257,7 +255,9 @@ namespace YouTubeMp3
             }
             else if (pipeline.AppleMusicProblem != null)
             {
-                banner.Show("Apple Music", Theme.Warn, PillShape.Hollow, pipeline.AppleMusicProblem);
+                var problem = pipeline.AppleMusicProblem;
+                banner.Show(problem.Blocks ? "Not sent" : "Waiting", problem.Blocks ? Theme.Fail : Theme.Warn, PillShape.Hollow,
+                    problem.Title + "\n" + problem.Fix);
                 dismiss.Visible = true;
             }
             else if (resent > 0)
@@ -265,16 +265,6 @@ namespace YouTubeMp3
                 banner.Show("Updated", Theme.Info, PillShape.Circle, (resent == 1 ? "A corrected copy of 1 song is" : "Corrected copies of " + resent + " songs are") +
                     " in Apple Music. Delete the old copies there (Songs \u203A select the old \u201CUnknown Album\u201D rows \u203A Delete from Library).");
                 dismiss.Visible = true;
-            }
-            else if (newGroups.Count > 0)
-            {
-                string names = String.Join(", ", newGroups.Select(g => "\u201C" + g + "\u201D").ToArray());
-                banner.Show(newGroups.Count == 1 ? "New playlist" : newGroups.Count + " new playlists", Theme.Info, PillShape.Circle,
-                    (newGroups.Count == 1 ? names + " is a new group. " : "New groups: " + names + ". ") +
-                    "In Apple Music select + next to Playlists \u203A New Smart Playlist \u203A Genre is the group name, with Live updating on. " +
-                    "Later songs join by themselves.");
-                copyGroup.Text = newGroups.Count == 1 ? "Copy group name" : "Copy group names";
-                copyGroup.Visible = dismiss.Visible = true;
             }
             else { banner.Visible = false; return; }
             banner.Visible = true;
@@ -284,6 +274,7 @@ namespace YouTubeMp3
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
+            if (keyData == Keys.F1) { InfoWindow.Open(this); return true; }   // F1 is Windows' help key
             if (keyData == (Keys.Control | Keys.V) && !input.Focused && Clipboard.ContainsText() && !(ActiveControl is TextBoxBase))
             {
                 input.Text = Clipboard.GetText();
@@ -371,8 +362,11 @@ namespace YouTubeMp3
             if (waiting.Count == 0) return;
             using (var dialog = new ReviewDialog(waiting, pipeline.Jobs, focus))
             {
-                if (dialog.ShowDialog(this) == DialogResult.OK && dialog.Accepted.Count > 0)
-                    pipeline.Send(dialog.Accepted);
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    pipeline.Save();   // keeps edits to songs left unticked for later
+                    if (dialog.Accepted.Count > 0) pipeline.Send(dialog.Accepted);
+                }
             }
             RefreshAll();
         }
@@ -435,6 +429,7 @@ namespace YouTubeMp3
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (keyData == Keys.Escape) { Close(); return true; }
+            if (keyData == Keys.F1) { InfoWindow.Open(this); return true; }
             return base.ProcessCmdKey(ref msg, keyData);
         }
     }
@@ -473,10 +468,16 @@ namespace YouTubeMp3
         }
     }
 
-    // A round raised button with one glyph, for the settings gear.
+    // A round raised button with one glyph, for the settings gear and the info page.
     internal sealed class RoundButton : Button
     {
         private bool hover, pressed;
+
+        // The "i" that opens the page about every feature.
+        internal static RoundButton Info()
+        {
+            return new RoundButton("i") { AccessibleName = "About this app and its features (F1)", Font = new Font("Georgia", 15f, FontStyle.Bold | FontStyle.Italic) };
+        }
 
         internal RoundButton(string glyph)
         {

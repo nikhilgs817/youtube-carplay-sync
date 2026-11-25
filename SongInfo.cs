@@ -347,7 +347,8 @@ namespace YouTubeMp3
                 if (!String.IsNullOrWhiteSpace(tag.Value)) args.AddRange(new[] { "-metadata", tag.Key + "=" + tag.Value.Trim() });
             if (artwork != null) args.AddRange(new[] { "-metadata:s:v", "title=Album cover", "-metadata:s:v", "comment=Cover (front)" });
             // yt-dlp's --embed-metadata leaves YouTube-only fields that Apple Music shows as junk ("escription"): blank them.
-            foreach (var junk in new[] { "description", "synopsis", "purl" }) args.AddRange(new[] { "-metadata", junk + "=" });
+            // The comment (the video link) is cleared too; the playlist name is written as a proper Comments field afterwards.
+            foreach (var junk in new[] { "description", "synopsis", "purl", "comment" }) args.AddRange(new[] { "-metadata", junk + "=" });
             args.Add(temp);
             var info = new ProcessStartInfo(encoder, String.Join(" ", args.Select(Quote).ToArray()))
             {

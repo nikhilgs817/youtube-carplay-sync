@@ -14,6 +14,8 @@ namespace YouTubeMp3
         private readonly PillButton send = Theme.Button("Send to Apple Music", 190, true);
         private readonly PillButton cancel = Theme.Button("Not now", 110);
         private readonly WrapLabel count = Layouts.Note("");
+        private readonly TextBox playlistAll = new TextBox { AccessibleName = "Playlist for all songs" };
+        private readonly PillButton applyAll = Theme.Button("Use for all", 120);
         internal readonly List<SongJob> Accepted = new List<SongJob>();
 
         private static readonly string[] Languages = { "Hindi", "English", "Punjabi", "Tamil", "Telugu", "Kannada", "Malayalam",
@@ -41,13 +43,29 @@ namespace YouTubeMp3
             var card = new Card("Check the tags, then send") { Dock = DockStyle.Fill, Margin = Padding.Empty };
             var body = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background };
             bool resend = waiting.Any(j => j.Resend);
-            var note = new Label { Text = "Title, artist, album and year come from Apple's catalogue where the song was found (see Info from). " +
-                "Language and genre become one Genre tag, for example \"Hindi - Pop\", which your Smart Playlists match on. Apple Music reads tags " +
-                "only when it imports a song, so fix anything here first. Untick a song to keep it waiting." +
+            int ruled = waiting.Count(j => j.RuleTagged);
+            var prefs = Preferences.Load();
+            var note = new WrapLabel { Text = "Language and genre become one Genre tag, for example \u201CHindi - Pop\u201D, and the playlist " +
+                "name goes in the Comments tag that your Smart Playlist collects. Apple Music reads tags only when it adds a song, so fix " +
+                "anything here first. Untick a song to keep it waiting." +
+                (ruled > 0 ? " " + (ruled == 1 ? "1 song was" : ruled + " songs were") + " tagged without a model, so accuracy is low: " +
+                    "check " + (ruled == 1 ? "its" : "their") + " language and genre." : "") +
                 (resend ? " Some songs are already in Apple Music: delete the old copies there first (Songs \u203A select \u203A Delete from Library), or you'll have two." : ""),
-                Dock = DockStyle.Fill, Font = Theme.Small, ForeColor = Theme.Muted, UseMnemonic = false, BackColor = Theme.Background };
-            var noteHost = new Panel { Dock = DockStyle.Top, Height = Theme.S(52), BackColor = Theme.Background };
-            noteHost.Controls.Add(note);
+                Font = Theme.Small, ForeColor = Theme.Muted, UseMnemonic = false, BackColor = Theme.Background, Margin = Padding.Empty };
+            var top = Layouts.Stack();
+            top.Dock = DockStyle.Top;
+            top.Padding = new Padding(0, 0, 0, Theme.S(10));
+            Layouts.Add(top, note, true, 10);
+            Layouts.Add(top, Theme.CapsLabel("Playlist for all songs"), true, 0);
+            playlistAll.Text = waiting.Select(j => (j.Playlist ?? "").Trim()).Distinct().Count() == 1 ? (waiting[0].Playlist ?? "").Trim() : prefs.Playlist;
+            var playlistRow = Layouts.Row(Theme.Field(playlistAll, "Leave empty to add to your library only"), applyAll);
+            playlistRow.Dock = DockStyle.None;
+            Layouts.Add(top, playlistRow, true, 0);
+            applyAll.Click += delegate
+            {
+                grid.EndEdit();
+                foreach (DataGridViewRow row in grid.Rows) row.Cells["Playlist"].Value = playlistAll.Text.Trim();
+            };
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = Theme.S(62), FlowDirection = FlowDirection.RightToLeft,
                 BackColor = Theme.Background, Padding = new Padding(0, Theme.S(10), 0, 0), WrapContents = false };
@@ -64,15 +82,23 @@ namespace YouTubeMp3
             languages.AddRange(Languages.Concat(known.Select(j => j.Language)).Where(v => !String.IsNullOrWhiteSpace(v)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
             var genres = new AutoCompleteStringCollection();
             genres.AddRange(Genres.Concat(known.Select(j => j.Genre)).Where(v => !String.IsNullOrWhiteSpace(v)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            var playlists = new AutoCompleteStringCollection();
+            playlists.AddRange(new[] { prefs.Playlist }.Concat(prefs.KnownPlaylists ?? new List<string>()).Concat(known.Select(j => j.Playlist))
+                .Where(v => !String.IsNullOrWhiteSpace(v)).Select(v => v.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            playlistAll.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+            playlistAll.AutoCompleteSource = AutoCompleteSource.CustomSource;
+            playlistAll.AutoCompleteCustomSource = playlists;
             grid.EditingControlShowing += (sender, e) =>
             {
                 var box = e.Control as TextBox;
                 if (box == null) return;
                 string column = grid.CurrentCell.OwningColumn.Name;
-                box.AutoCompleteMode = column == "Language" || column == "Genre" ? AutoCompleteMode.SuggestAppend : AutoCompleteMode.None;
-                box.AutoCompleteSource = column == "Language" || column == "Genre" ? AutoCompleteSource.CustomSource : AutoCompleteSource.None;
+                bool suggest = column == "Language" || column == "Genre" || column == "Playlist";
+                box.AutoCompleteMode = suggest ? AutoCompleteMode.SuggestAppend : AutoCompleteMode.None;
+                box.AutoCompleteSource = suggest ? AutoCompleteSource.CustomSource : AutoCompleteSource.None;
                 if (column == "Language") box.AutoCompleteCustomSource = languages;
                 if (column == "Genre") box.AutoCompleteCustomSource = genres;
+                if (column == "Playlist") box.AutoCompleteCustomSource = playlists;
                 // Entering a cell selects its text, so typing replaces a wrong suggestion instead of adding to it.
                 grid.BeginInvoke(new Action(() => { if (!box.IsDisposed) box.SelectAll(); }));
                 box.KeyDown -= SelectAllOnCtrlA;
@@ -81,14 +107,16 @@ namespace YouTubeMp3
 
             foreach (var job in waiting)
             {
+                string source = String.IsNullOrEmpty(job.InfoSource) ? (job.AiTagged ? "AI" : "Not found") : job.InfoSource;
+                if (job.RuleTagged) source += " + rules";
                 int row = grid.Rows.Add(true, job.Title, job.Artist, job.Album, job.Year, job.Language, job.Genre,
-                    String.IsNullOrEmpty(job.InfoSource) ? (job.AiTagged ? "AI" : "Not found") : job.InfoSource);
+                    String.IsNullOrWhiteSpace(job.Playlist) ? prefs.Playlist : job.Playlist.Trim(), source);
                 grid.Rows[row].Tag = job;
                 if (job == focus) grid.CurrentCell = grid.Rows[row].Cells["Language"];
             }
 
             body.Controls.Add(grid);
-            body.Controls.Add(noteHost);
+            body.Controls.Add(top);
             body.Controls.Add(buttons);
             card.Fill(body);
             outer.Controls.Add(card);
@@ -118,18 +146,30 @@ namespace YouTubeMp3
             grid.DefaultCellStyle.SelectionBackColor = Theme.AccentSoft;
             grid.DefaultCellStyle.SelectionForeColor = Theme.Text;
             grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Send", HeaderText = "SEND", FillWeight = 8, MinimumWidth = Theme.S(56) });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Title", HeaderText = "TITLE", FillWeight = 22 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Artist", HeaderText = "ARTIST", FillWeight = 22 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Album", HeaderText = "ALBUM / FILM", FillWeight = 20 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Year", HeaderText = "YEAR", FillWeight = 7 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Language", HeaderText = "LANGUAGE", FillWeight = 11 });
-            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Genre", HeaderText = "GENRE", FillWeight = 11 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Title", HeaderText = "TITLE", FillWeight = 20 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Artist", HeaderText = "ARTIST", FillWeight = 19 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Album", HeaderText = "ALBUM / FILM", FillWeight = 17 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Year", HeaderText = "YEAR", FillWeight = 7, MaxInputLength = 4 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Language", HeaderText = "LANGUAGE", FillWeight = 10 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Genre", HeaderText = "GENRE", FillWeight = 10 });
+            grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Playlist", HeaderText = "PLAYLIST", FillWeight = 12, MaxInputLength = 80 });
             grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Source", HeaderText = "INFO FROM", FillWeight = 11, ReadOnly = true });
             grid.Columns["Source"].DefaultCellStyle.ForeColor = Theme.Muted;
+            grid.CellValidating += (sender, e) =>
+            {
+                if (grid.Columns[e.ColumnIndex].Name != "Year") return;
+                string year = Convert.ToString(e.FormattedValue ?? "").Trim();
+                grid.Rows[e.RowIndex].ErrorText = year.Length == 0 || IsYear(year) ? "" : "Year is four digits, like 2023, or empty.";
+            };
             grid.CellFormatting += (sender, e) =>
             {
                 if (e.RowIndex < 0) return;
                 string name = grid.Columns[e.ColumnIndex].Name;
+                if (name == "Year" && !String.IsNullOrWhiteSpace(Convert.ToString(e.Value)) && !IsYear(Convert.ToString(e.Value).Trim()))
+                {
+                    e.CellStyle.BackColor = Theme.Mix(Theme.Fail, Theme.Background, 0.14f);
+                    e.CellStyle.ForeColor = Theme.Fail;
+                }
                 if ((name == "Language" || name == "Genre") && String.IsNullOrWhiteSpace(Convert.ToString(e.Value)))
                 {
                     e.CellStyle.BackColor = Theme.Mix(Theme.Accent, Theme.Background, 0.10f);
@@ -165,24 +205,48 @@ namespace YouTubeMp3
             count.ForeColor = Theme.Accent2;
         }
 
+        internal static bool IsYear(string text)
+        {
+            int year;
+            return text.Length == 4 && Int32.TryParse(text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out year) &&
+                year >= 1900 && year <= DateTime.Now.Year + 1;
+        }
+
         private void Accept()
         {
             grid.EndEdit();
+            // A wrong year would go into Apple Music as is: point at it instead of sending.
             foreach (DataGridViewRow row in grid.Rows)
             {
-                if (!Convert.ToBoolean(row.Cells["Send"].Value)) continue;
+                string year = Convert.ToString(row.Cells["Year"].Value ?? "").Trim();
+                if (!Convert.ToBoolean(row.Cells["Send"].Value) || year.Length == 0 || IsYear(year)) continue;
+                grid.CurrentCell = row.Cells["Year"];
+                count.Text = "Fix the year for \u201C" + Keep(row.Cells["Title"].Value) + "\u201D: four digits, like 2023, or empty.";
+                count.ForeColor = Theme.Fail;
+                return;
+            }
+            var used = new List<string>();
+            // Edits are kept for every song, ticked or not; only ticked songs are sent.
+            foreach (DataGridViewRow row in grid.Rows)
+            {
                 var job = (SongJob)row.Tag;
+                string oldArtist = job.Artist;
                 string title = Keep(row.Cells["Title"].Value);
                 job.Title = title.Length > 0 ? title : job.Title;
                 job.Artist = Keep(row.Cells["Artist"].Value);
                 job.Language = Clean(row.Cells["Language"].Value);
                 job.Genre = Clean(row.Cells["Genre"].Value);
-                string album = Convert.ToString(row.Cells["Album"].Value ?? "").Trim();
-                if (album != job.Album) { job.Album = album; }
-                job.Year = Convert.ToString(row.Cells["Year"].Value ?? "").Trim();
-                if (job.AlbumArtist.Length == 0 || job.AlbumArtist == job.Artist) job.AlbumArtist = job.Artist;
+                job.Album = Keep(row.Cells["Album"].Value);
+                string year = Convert.ToString(row.Cells["Year"].Value ?? "").Trim();
+                job.Year = IsYear(year) ? year : "";
+                job.Playlist = Keep(row.Cells["Playlist"].Value);
+                // The album artist follows an edited artist unless it was set to someone else (a compilation, a film).
+                if (job.AlbumArtist.Length == 0 || String.Equals(job.AlbumArtist, oldArtist, StringComparison.Ordinal)) job.AlbumArtist = job.Artist;
+                if (!Convert.ToBoolean(row.Cells["Send"].Value)) continue;
+                if (job.Playlist.Length > 0) used.Add(job.Playlist);
                 Accepted.Add(job);
             }
+            if (used.Count > 0) Preferences.Update(p => { foreach (var name in used.Distinct(StringComparer.OrdinalIgnoreCase)) p.RememberPlaylist(name); });
             DialogResult = DialogResult.OK;
             Close();
         }

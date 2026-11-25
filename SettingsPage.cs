@@ -10,12 +10,9 @@ using System.Windows.Forms;
 
 namespace YouTubeMp3
 {
-    // Settings: audio tools, download options, the optional local model and library export.
+    // Settings: audio tools, download options, how AI is connected, the default playlist and Apple Music.
     internal sealed class SettingsPage : UserControl
     {
-        // The vLLM key lives only in memory for this session.
-        internal static string SessionApiKey = "";
-
         private readonly ToolStatusView toolList = new ToolStatusView();
         private readonly PillButton install = Theme.Button("Install tools", 120, true);
         private readonly PillButton update = Theme.Button("Update yt-dlp", 120);
@@ -27,16 +24,26 @@ namespace YouTubeMp3
         private readonly Toggle artwork = new Toggle("Embed cover art in each MP3");
         private readonly Segmented cookies = new Segmented("Off", "Firefox");
 
-        private readonly Toggle aiEnabled = new Toggle("Suggest language and genre with a local model");
-        private readonly Segmented provider = new Segmented(LocalModels.Ollama, LocalModels.Vllm);
+        // AI, in three steps: how to connect, what that connection needs, then which model.
+        private readonly ComboBox aiWay = new ComboBox { AccessibleName = "How to connect AI", DropDownStyle = ComboBoxStyle.DropDownList };
         private readonly TextBox endpoint = new TextBox { AccessibleName = "Model server address" };
-        private readonly TextBox apiKey = new TextBox { AccessibleName = "Optional vLLM API key", UseSystemPasswordChar = true };
+        private readonly TextBox apiKey = new TextBox { AccessibleName = "API key", UseSystemPasswordChar = true };
         private readonly ComboBox model = new ComboBox { AccessibleName = "Model", DropDownStyle = ComboBoxStyle.DropDown };
         private readonly Segmented timeout = new Segmented("60 s", "120 s", "300 s");
         private readonly PillButton loadModels = Theme.Button("Test & load models", 150);
         private readonly Label aiStatus = Layouts.Note("Not tested yet.");
-        private readonly Control keyRow;
-        private readonly Label keyLabel = Theme.CapsLabel("API key (optional, kept for this session)");
+        private readonly Label endpointLabel = Theme.CapsLabel("Server address");
+        private readonly Label keyLabel = Theme.CapsLabel("API key");
+        private readonly Label keyHelp = Layouts.Note("");
+        private readonly Label modelLabel = Theme.CapsLabel("Model");
+        private readonly Label timeoutLabel = Theme.CapsLabel("Wait for an answer up to");
+        private readonly Label aiNote = Layouts.Note("");
+        private Control endpointRow, keyRow, modelRow;
+        private string shownProvider;
+
+        private readonly TextBox defaultPlaylist = new TextBox { AccessibleName = "Default Apple Music playlist" };
+        private readonly PillButton copyPlaylist = Theme.Button("Copy name", 110);
+        private readonly Label playlistNote = Layouts.Note("");
 
         private readonly TextBox musicFolder = new TextBox { AccessibleName = "Folder where downloaded songs are saved" };
         private readonly PillButton browseMusic = Theme.Button("Browse…", 100);
@@ -78,7 +85,15 @@ namespace YouTubeMp3
             Layouts.Add(right, AiCard(), true, 14);
             Layouts.Add(right, AppleMusicCard(), true, 14);
             Controls.Add(columns);
-            Controls.Add(Layouts.Header("Settings", "Everything here is saved on this PC. Your music never leaves it."));
+            var header = Layouts.Header("Settings", "Saved on this PC. Your music never leaves it; with a cloud AI, only song names go to that service.");
+            var info = RoundButton.Info();
+            info.Click += delegate { InfoWindow.Open(FindForm()); };
+            header.Dock = DockStyle.None;
+            var top = Layouts.Row(header, info);
+            top.Dock = DockStyle.Top;
+            info.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            Controls.Add(top);
+            endpointRow = endpoint.Parent;
             keyRow = apiKey.Parent;
 
             LoadValues();
@@ -96,24 +111,37 @@ namespace YouTubeMp3
             {
                 if (!loading) Preferences.Update(p => p.CookiesBrowser = cookies.SelectedIndex == 1 ? "firefox" : "");
             };
-            aiEnabled.CheckedChanged += delegate { if (!loading) Preferences.Update(p => p.AiEnabled = aiEnabled.Checked); UpdateAiControls(); };
-            provider.SelectedIndexChanged += delegate
+            aiWay.SelectedIndexChanged += delegate
             {
                 if (loading) return;
-                endpoint.Text = LocalModels.DefaultEndpoint(provider.SelectedText);
-                model.Items.Clear();
-                model.Text = "";
-                apiKey.Text = "";
-                SaveAi();
-                UpdateAiControls();
+                string chosen = Chosen;
+                Preferences.Update(p => { p.AiProvider = chosen; p.AiEnabled = chosen != AiProviders.None; });
+                ShowProvider(Preferences.Load());
                 aiStatus.Text = "Not tested yet.";
                 aiStatus.ForeColor = Theme.Muted;
             };
             endpoint.LostFocus += delegate { SaveAi(); };
             model.LostFocus += delegate { SaveAi(); };
             model.SelectedIndexChanged += delegate { SaveAi(); };
-            apiKey.TextChanged += delegate { SessionApiKey = apiKey.Text; };
+            // A key is saved, encrypted, as soon as it's pasted, so closing Settings straight away keeps it.
+            apiKey.TextChanged += delegate
+            {
+                if (loading || shownProvider == null) return;
+                string which = shownProvider, key = apiKey.Text.Trim();
+                if (key == Preferences.Load().GetKey(which)) return;
+                Preferences.Update(p => p.SetKey(which, key));
+                ShowKeyStatus();
+            };
             timeout.SelectedIndexChanged += delegate { if (!loading) SaveAi(); };
+            defaultPlaylist.TextChanged += delegate
+            {
+                if (loading) return;
+                string name = defaultPlaylist.Text.Trim();
+                Preferences.Update(p => p.DefaultPlaylist = name);
+                ShowPlaylistNote();
+            };
+            defaultPlaylist.LostFocus += delegate { string name = defaultPlaylist.Text.Trim(); Preferences.Update(p => p.RememberPlaylist(name)); };
+            copyPlaylist.Click += delegate { if (defaultPlaylist.Text.Trim().Length > 0) Clipboard.SetText(defaultPlaylist.Text.Trim()); };
             loadModels.Click += async delegate { await TestModels(); };
             browseMusic.Click += delegate
             {
@@ -167,19 +195,17 @@ namespace YouTubeMp3
             autoUpdate.Checked = prefs.AutoUpdateTools;
             artwork.Checked = prefs.UseArtwork;
             cookies.SelectedIndex = String.Equals(prefs.CookiesBrowser, "firefox", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
-            aiEnabled.Checked = prefs.UseAi;
-            provider.Select(prefs.Provider == LocalModels.Vllm ? LocalModels.Vllm : LocalModels.Ollama);
-            endpoint.Text = String.IsNullOrWhiteSpace(prefs.Endpoint) ? LocalModels.DefaultEndpoint(provider.SelectedText) : prefs.Endpoint;
-            model.Text = prefs.Model ?? "";
+            aiWay.SelectedIndex = Math.Max(0, Array.IndexOf(AiProviders.All, prefs.ActiveProvider));
             timeout.SelectedIndex = prefs.Timeout <= 60 ? 0 : prefs.Timeout <= 120 ? 1 : 2;
-            apiKey.Text = SessionApiKey;
+            defaultPlaylist.Text = prefs.Playlist;
             musicFolder.Text = String.IsNullOrWhiteSpace(prefs.DownloadFolder) ? Theme.DefaultMusicFolder : prefs.DownloadFolder;
             quality.Select(String.IsNullOrEmpty(prefs.Quality) ? "Best" : prefs.Quality);
             appleFolder.Text = prefs.AppleMusicFolder ?? "";
             removeCopy.Checked = prefs.RemoveCopy;
             webKey.Text = prefs.WebKey;
             loading = false;
-            UpdateAiControls();
+            ShowProvider(prefs);
+            ShowPlaylistNote();
             ShowAppleStatus();
             ShowWebStatus();
         }
@@ -208,12 +234,77 @@ namespace YouTubeMp3
             }
         }
 
+        private string Chosen { get { return AiProviders.All[Math.Max(0, aiWay.SelectedIndex)]; } }
+
         private void SaveAi()
         {
-            if (loading) return;
-            string p = provider.SelectedText, e = endpoint.Text.Trim(), m = model.Text.Trim();
+            if (loading || shownProvider == null) return;
+            string p = shownProvider, e = endpoint.Text.Trim(), m = model.Text.Trim();
             int seconds = timeout.SelectedIndex == 0 ? 60 : timeout.SelectedIndex == 1 ? 120 : 300;
-            Preferences.Update(x => { x.Provider = p; x.Endpoint = e; x.Model = m; x.AiTimeout = seconds; });
+            Preferences.Update(x =>
+            {
+                x.AiTimeout = seconds;
+                if (p == AiProviders.None) return;
+                x.SetModel(p, m);
+                if (AiProviders.IsLocal(p)) { x.SetEndpoint(p, e); x.Provider = p; x.Endpoint = e; x.Model = m; }
+            });
+        }
+
+        // Fill the second and third steps for the chosen way to connect, and show only what it needs.
+        private void ShowProvider(Preferences prefs)
+        {
+            loading = true;
+            string p = Chosen;
+            shownProvider = p;
+            bool none = p == AiProviders.None, local = AiProviders.IsLocal(p), cloud = AiProviders.IsCloud(p);
+            endpoint.Text = local ? prefs.EndpointFor(p) : "";
+            apiKey.Text = cloud || p == AiProviders.Vllm ? prefs.GetKey(p) : "";
+            model.Items.Clear();
+            model.Items.AddRange(AiProviders.SuggestedModels(p));
+            string saved = prefs.ModelFor(p);
+            model.Text = saved.Length > 0 ? saved : (cloud && model.Items.Count > 0 ? Convert.ToString(model.Items[0]) : "");
+            loading = false;
+            if (cloud && saved.Length == 0 && model.Text.Length > 0) SaveAi();
+
+            endpointLabel.Visible = endpointRow.Visible = local;
+            keyLabel.Visible = keyRow.Visible = keyHelp.Visible = cloud || p == AiProviders.Vllm;
+            // Numbered as the three steps: how to connect, what that needs, the model.
+            endpointLabel.Text = "2 · Server address".ToUpperInvariant();
+            keyLabel.Text = (p == AiProviders.Vllm ? "API key (optional)" : "2 · " + p + " API key").ToUpperInvariant();
+            apiKey.AccessibleName = p == AiProviders.Vllm ? "vLLM API key (optional)" : p + " API key";
+            modelLabel.Text = "3 · Model".ToUpperInvariant();
+            keyHelp.Text = AiProviders.KeyHelp(p);
+            modelLabel.Visible = modelRow.Visible = aiStatus.Visible = timeoutLabel.Visible = timeout.Visible = !none;
+            if (cloud)
+                aiNote.Text = "For each song, " + p + " gets only its YouTube title, channel, a short part of the description and the catalogue " +
+                    "matches. No audio, files or anything else from this PC. Each song is one small request on your " + p + " account." +
+                    (p == AiProviders.Claude ? " Claude Opus and Sonnet retry a declined answer on a fallback model automatically." : "");
+            else if (local)
+                aiNote.Text = "Runs on this PC or your own server. Good models for Indian-language titles: qwen3:30b-a3b or gemma3:27b.";
+            else
+                aiNote.Text = RuleTagger.LowAccuracy + ". Language and genre come from the script of the title, words like bhajan " +
+                    "or remix, well-known labels and the catalogue's genre. Check them in Review tags.";
+            aiNote.ForeColor = none ? Theme.Warn : Theme.Muted;
+            ShowKeyStatus();
+        }
+
+        private void ShowKeyStatus()
+        {
+            if (!AiProviders.IsCloud(shownProvider)) return;
+            bool set = apiKey.Text.Trim().Length > 0;
+            aiStatus.ForeColor = set ? Theme.Pass : Theme.Warn;
+            aiStatus.Text = set ? "Key saved, encrypted for your Windows account. Select Test & load models to check it."
+                : "Paste your " + shownProvider + " API key to use it.";
+        }
+
+        private void ShowPlaylistNote()
+        {
+            string name = defaultPlaylist.Text.Trim();
+            playlistNote.Text = name.Length == 0
+                ? "No default playlist: songs go to your library only. You can still choose a playlist per song in Review tags."
+                : "Songs go to \u201C" + name + "\u201D unless you change it in Review tags. Once per playlist name, in Apple Music select + next to " +
+                  "Playlists \u203A New Smart Playlist, set the rule Comments is " + name + ", tick Live updating and name it " + name + ". " +
+                  "Every song sent with that name then joins it by itself.";
         }
 
         private void SaveFolders()
@@ -221,15 +312,6 @@ namespace YouTubeMp3
             if (loading) return;
             string music = musicFolder.Text.Trim(), apple = appleFolder.Text.Trim();
             Preferences.Update(x => { x.DownloadFolder = music; x.AppleMusicFolder = apple; });
-        }
-
-        private void UpdateAiControls()
-        {
-            bool on = aiEnabled.Checked;
-            foreach (Control c in new Control[] { provider, endpoint, model, timeout, loadModels, apiKey }) c.Enabled = on;
-            bool vllm = provider.SelectedText == LocalModels.Vllm;
-            keyLabel.Visible = vllm;
-            if (keyRow != null) keyRow.Visible = vllm;
         }
 
         // ---- cards --------------------------------------------------------------------------------------------
@@ -269,24 +351,27 @@ namespace YouTubeMp3
 
         private Card AiCard()
         {
-            var card = new Card("Local AI (optional)");
+            var card = new Card("AI for song details");
             var stack = Layouts.Stack();
-            Layouts.Add(stack, aiEnabled, false, 10);
-            Layouts.Add(stack, Theme.CapsLabel("Provider"), true, 0);
-            Layouts.Add(stack, provider, false, 10);
-            Layouts.Add(stack, Theme.CapsLabel("Server address"), true, 0);
+            Layouts.Add(stack, Layouts.Note("Each song is looked up in Apple's music catalogue and MusicBrainz. AI picks the right match and adds " +
+                "language and genre. Every song still waits for you in Review tags before it goes to Apple Music."), true, 12);
+            Layouts.Add(stack, Theme.CapsLabel("1 · How to connect AI"), true, 0);
+            StyleCombo(aiWay);
+            foreach (var p in AiProviders.All) aiWay.Items.Add(AiProviders.Label(p));
+            Layouts.Add(stack, aiWay, true, 10);
+            Layouts.Add(stack, endpointLabel, true, 0);
             Layouts.Add(stack, Theme.Field(endpoint), true, 10);
             Layouts.Add(stack, keyLabel, true, 0);
-            Layouts.Add(stack, Theme.Field(apiKey), true, 10);
-            Layouts.Add(stack, Theme.CapsLabel("Model"), true, 0);
+            Layouts.Add(stack, Theme.Field(apiKey), true, 4);
+            Layouts.Add(stack, keyHelp, true, 10);
+            Layouts.Add(stack, modelLabel, true, 0);
             StyleCombo(model);
-            Layouts.Add(stack, Layouts.Row(model, loadModels), true, 6);
+            modelRow = Layouts.Row(model, loadModels);
+            Layouts.Add(stack, modelRow, true, 6);
             Layouts.Add(stack, aiStatus, true, 10);
-            Layouts.Add(stack, Theme.CapsLabel("Wait for an answer up to"), true, 0);
+            Layouts.Add(stack, timeoutLabel, true, 0);
             Layouts.Add(stack, timeout, false, 10);
-            Layouts.Add(stack, Layouts.Note("Each song is looked up in Apple's music catalogue and MusicBrainz; the model picks the right match and " +
-                "adds language and genre. Every song waits for you to check its details before it goes to Apple Music. " +
-                "Good models for Indian-language titles: qwen3:30b-a3b or gemma3:27b."), true, 12);
+            Layouts.Add(stack, aiNote, true, 12);
             Layouts.Add(stack, Theme.CapsLabel("Ollama web search key (optional)"), true, 0);
             Layouts.Add(stack, Theme.Field(webKey), true, 6);
             Layouts.Add(stack, webStatus, true, 0);
@@ -298,6 +383,9 @@ namespace YouTubeMp3
         {
             var card = new Card("Apple Music");
             var stack = Layouts.Stack();
+            Layouts.Add(stack, Theme.CapsLabel("Default playlist"), true, 0);
+            Layouts.Add(stack, Layouts.Row(Theme.Field(defaultPlaylist, "For example CarPlay"), copyPlaylist), true, 6);
+            Layouts.Add(stack, playlistNote, true, 14);
             Layouts.Add(stack, Layouts.Note("When you send songs, the app copies each tagged MP3 into Apple Music's \"Automatically Add to Apple Music\" " +
                 "folder. Apple Music imports it from there and the app confirms it arrived. Leave the box empty to find the folder automatically."), true, 12);
             Layouts.Add(stack, Theme.CapsLabel("Automatically Add folder"), true, 0);
@@ -424,12 +512,15 @@ namespace YouTubeMp3
         private async Task TestModels()
         {
             SaveAi();
+            string p = shownProvider;
+            if (p == null || p == AiProviders.None) return;
             loadModels.Enabled = false;
             aiStatus.ForeColor = Theme.Muted;
-            aiStatus.Text = "Connecting to " + provider.SelectedText + "…";
+            aiStatus.Text = "Connecting to " + p + "…";
             try
             {
-                using (var client = new LocalModels(provider.SelectedText, endpoint.Text, apiKey.Text))
+                using (ISongModel client = AiProviders.IsLocal(p) ? (ISongModel)new LocalModels(p, endpoint.Text, apiKey.Text)
+                    : new CloudModels(p, apiKey.Text))
                 using (var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
                 {
                     var names = await client.ListAsync(cancel.Token);
@@ -439,7 +530,8 @@ namespace YouTubeMp3
                     model.Text = names.Contains(prior) ? prior : (names.FirstOrDefault() ?? prior);
                     SaveAi();
                     aiStatus.ForeColor = names.Length == 0 ? Theme.Warn : Theme.Pass;
-                    aiStatus.Text = names.Length == 0 ? "Connected, but no local models are installed on this server." :
+                    aiStatus.Text = names.Length == 0 ? (AiProviders.IsLocal(p) ? "Connected, but no models are installed on this server."
+                        : "Connected, but this key can't use any text models.") :
                         "Connected · " + names.Length + " model" + (names.Length == 1 ? "" : "s") + " available.";
                 }
             }
@@ -449,7 +541,7 @@ namespace YouTubeMp3
                 aiStatus.ForeColor = Theme.Fail;
                 aiStatus.Text = ex is OperationCanceledException ? "The server did not answer within 20 seconds." : ex.Message;
             }
-            finally { loadModels.Enabled = aiEnabled.Checked; }
+            finally { loadModels.Enabled = true; }
         }
     }
 

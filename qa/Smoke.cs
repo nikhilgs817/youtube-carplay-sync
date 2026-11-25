@@ -93,9 +93,17 @@ class Smoke
         using (var appForm = new MainWindow())
         {
             appForm.CreateControl(); appForm.PerformLayout();
-            var page = appForm.Controls.OfType<TableLayoutPanel>().First().Controls.OfType<Panel>().Last().Controls.OfType<MusicPage>().First();
-            page.CreateControl(); page.PerformLayout();
-            Check(appForm.ClientSize.Width >= 900 && page.Controls.Count > 0, "Main form and organizer initialization");
+            Check(appForm.ClientSize.Width >= 900 && appForm.Controls.Count > 0, "Main form initialization");
+        }
+        using (var settings = new SettingsWindow())
+        {
+            settings.CreateControl(); settings.PerformLayout();
+            Check(settings.Controls.OfType<SettingsPage>().Any(), "Settings window initialization");
+        }
+        using (var info = (Form)Activator.CreateInstance(typeof(InfoWindow), true))
+        {
+            info.CreateControl(); info.PerformLayout();
+            Check(info.Controls.Count > 0, "Info page initialization");
         }
         using (var installer = (Form)Activator.CreateInstance(assembly.GetType("YouTubeMp3.Setup.Installer")))
         {
@@ -104,6 +112,6 @@ class Smoke
         }
         var linkBatch = VideoLink.Parse("https://youtu.be/11111111111\nhttps://youtube.com/watch?v=11111111111\ninvalid");
         Check(linkBatch.Count == 2 && linkBatch[0].Id != null && linkBatch[1].Id == null, "Previous download batch parsing");
-        Console.WriteLine("PASS: provider paths and auth, discovery and cloud filtering, structured classification, all grouping modes, metadata fallback, safe copy and cancellation, both icons, installer payload and both forms.");
+        Console.WriteLine("PASS: provider paths and auth, discovery and cloud filtering, structured classification, all grouping modes, metadata fallback, safe copy and cancellation, both icons, installer payload, main window, Settings and the info page.");
     }
 }

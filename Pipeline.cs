@@ -24,6 +24,8 @@ namespace YouTubeMp3
         public string Language { get; set; }
         public string Genre { get; set; }
         public bool AiTagged { get; set; }
+        public bool RuleTagged { get; set; }       // language and genre came from the built-in rules, not a model
+        public string Playlist { get; set; }       // the Apple Music playlist this song goes to (written to the comment tag)
         public Stage Stage { get; set; }
         public Stage FailedAt { get; set; }
         public string Message { get; set; }
@@ -31,7 +33,6 @@ namespace YouTubeMp3
         public string Hint { get; set; }
         public string ImportCopy { get; set; }
         public DateTime CopiedAt { get; set; }
-        public string NewGroup { get; set; }
         public DateTime Added { get; set; }
         public string Album { get; set; }
         public string AlbumArtist { get; set; }
@@ -56,7 +57,7 @@ namespace YouTubeMp3
         {
             Id = Guid.NewGuid().ToString("N");
             Title = Artist = File = Language = Genre = Message = Error = Hint = "";
-            Album = AlbumArtist = Year = ArtworkUrl = InfoSource = "";
+            Album = AlbumArtist = Year = ArtworkUrl = InfoSource = Playlist = "";
             YtTitle = YtChannel = YtTrack = YtArtist = YtAlbum = YtYear = YtDescription = "";
             Added = DateTime.Now;
         }
@@ -159,9 +160,8 @@ namespace YouTubeMp3
         private bool downloading, tagging, importing, checkedForUpdate, shuttingDown;
 
         internal event Action Changed;                 // any song changed; repaint
-        internal event Action<string> NewGroupAdded;   // a song started a new genre group in Apple Music
         internal event Action<SongJob> ResentAdded;    // a corrected copy of a song that was already in Apple Music
-        internal string AppleMusicProblem;             // set when the import folder can't be found
+        internal SendProblem AppleMusicProblem;        // what's stopping songs reaching Apple Music, or null
 
         internal Pipeline(string store = null, bool run = true)
         {
@@ -496,17 +496,19 @@ namespace YouTubeMp3
 
                 CatalogMatch chosen = guess;
                 IDictionary<string, object> answer = null;
-                bool useAi = prefs.UseAi && !String.IsNullOrWhiteSpace(prefs.Model);
+                string provider = prefs.ActiveProvider;
+                string model = prefs.ModelFor(provider);
+                bool useAi = provider != AiProviders.None && model.Length > 0;
+                if (provider != AiProviders.None && !useAi) notes.Add("AI isn't set up: pick a model in Settings");
                 Func<Task> judge = async () =>
                 {
-                    job.Message = "AI is checking the matches";
+                    job.Message = (AiProviders.IsLocal(provider) ? "AI" : provider) + " is checking the matches";
                     Raise();
                     try
                     {
-                        using (var client = new LocalModels(prefs.Provider == LocalModels.Vllm ? LocalModels.Vllm : LocalModels.Ollama,
-                            String.IsNullOrWhiteSpace(prefs.Endpoint) ? LocalModels.DefaultEndpoint(prefs.Provider) : prefs.Endpoint,
-                            SettingsPage.SessionApiKey) { ClassifyTimeout = prefs.Timeout })
+                        using (var client = AiProviders.Create(prefs))
                         {
+                            if (client == null) throw new InvalidOperationException("add your " + provider + " API key in Settings");
                             var input = new
                             {
                                 youtube = new { title = title, channel = yt.Channel, song = yt.Track, artist = yt.Artist, album = yt.Album, year = yt.Year,
@@ -515,7 +517,7 @@ namespace YouTubeMp3
                                     album = m.Album, year = m.Year, genre = m.Genre }).ToArray(),
                                 web = web.ToArray()
                             };
-                            answer = await client.AskJsonAsync(prefs.Model, Judge, input, JudgeSchema, token);
+                            answer = await client.AskJsonAsync(model, Judge, input, JudgeSchema, token);
                             int index = Convert.ToInt32(answer.ContainsKey("match") ? answer["match"] : -1);
                             chosen = index >= 0 && index < candidates.Count ? candidates[index] : null;
                         }
@@ -563,13 +565,25 @@ namespace YouTubeMp3
                     job.InfoSource = yt.Track.Length > 0 ? "YouTube" : "Not found";
                 }
                 job.SplitGroup();
+                job.AiTagged = job.RuleTagged = false;
                 if (answer != null)
                 {
                     if (job.Language.Length == 0) job.Language = MusicLibrary.CleanTag(Pick(answer, "language", ""));
                     if (job.Genre.Length == 0) job.Genre = MusicLibrary.CleanGenreTag(Pick(answer, "genre", ""));
                     job.AiTagged = true;
                 }
+                else if (job.Language.Length == 0 || job.Genre.Length == 0)
+                {
+                    // No model, or it couldn't answer: the built-in rules fill what they can.
+                    string language, genre;
+                    RuleTagger.Guess(yt, title, chosen, out language, out genre);
+                    if (job.Language.Length == 0) job.Language = MusicLibrary.CleanTag(language);
+                    if (job.Genre.Length == 0) job.Genre = MusicLibrary.CleanGenreTag(genre);
+                    job.RuleTagged = true;
+                    notes.Add(RuleTagger.LowAccuracy);
+                }
             }
+            if (String.IsNullOrWhiteSpace(job.Playlist)) job.Playlist = prefs.Playlist;
             string found = Summary(job);
             if (notes.Count > 0) found += " \u00B7 " + String.Join("; ", notes.ToArray());
             Set(job, Stage.Review, found, -1);
@@ -646,14 +660,16 @@ namespace YouTubeMp3
         private async Task ImportOne(SongJob job)
         {
             string target = await Task.Run(() => AppleMusic.AutoAddFolder());
-            if (target == null)
+            SendProblem blocked = await Task.Run(() => SendCheck.BeforeSend(target));
+            if (blocked != null)
             {
-                AppleMusicProblem = "Apple Music's \"Automatically Add to Apple Music\" folder wasn't found. Open Apple Music once " +
-                    "so it creates its Media folder, or choose the folder in Settings › Apple Music.";
-                Set(job, Stage.Review, "Waiting: Apple Music's import folder wasn't found", -1);
+                // Every song still to send hits the same wall: put them all back in Review and say why once.
+                AppleMusicProblem = blocked;
+                foreach (var waiting in Jobs.Where(j => j.Stage == Stage.Importing && String.IsNullOrEmpty(j.ImportCopy)).ToList())
+                    Set(waiting, Stage.Review, blocked.Status, -1);
                 return;
             }
-            AppleMusicProblem = null;
+            if (AppleMusicProblem != null && AppleMusicProblem.Blocks) AppleMusicProblem = null;
             string group = job.Group;
             string artwork = null;
             try
@@ -670,6 +686,7 @@ namespace YouTubeMp3
                     new KeyValuePair<string, string>("genre", group ?? ""),
                     new KeyValuePair<string, string>("language", job.Language)
                 };
+                string playlist = (job.Playlist ?? "").Trim();
                 if (job.ArtworkUrl.Length > 0)
                 {
                     job.Message = "Getting the official cover art";
@@ -686,14 +703,15 @@ namespace YouTubeMp3
                     System.IO.File.SetAttributes(file, System.IO.File.GetAttributes(file) & ~FileAttributes.ReadOnly);
                     if (encoder == null) throw new InvalidOperationException("FFmpeg is missing. Select Install tools.");
                     SongLookup.WriteTags(encoder, file, tags, art);
+                    // The playlist name goes in Comments, for an Apple Music Smart Playlist with the rule "Comments is <name>".
+                    if (!Id3Comment.Set(file, playlist) && playlist.Length > 0)
+                        throw new InvalidOperationException("The playlist name couldn't be written to this MP3's tags.");
                     string destination = Unique(Path.Combine(target, name));
                     System.IO.File.Copy(file, destination);
                     return destination;
                 });
                 job.ImportCopy = copy;
                 job.CopiedAt = DateTime.Now;
-                job.NewGroup = group != null && !groups.Contains(group) &&
-                    !Jobs.Any(j => j != job && j.Stage == Stage.Done && String.Equals(j.Group, group, StringComparison.OrdinalIgnoreCase)) ? group : null;
                 Set(job, Stage.Importing, "Handing it to Apple Music", -1);
             }
             catch (Exception ex)
@@ -721,14 +739,20 @@ namespace YouTubeMp3
         // Apple Music empties its Automatically Add folder as it imports. A file it rejects moves to "Not Added".
         private void CheckImports()
         {
+            SendCheck.Running apps = null;
             foreach (var job in Jobs.Where(j => j.Stage == Stage.Importing && !String.IsNullOrEmpty(j.ImportCopy)).ToList())
             {
                 string copy = job.ImportCopy;
                 if (System.IO.File.Exists(copy))
                 {
-                    if ((DateTime.Now - job.CopiedAt).TotalSeconds > 20 && !job.Message.StartsWith("Open Apple Music", StringComparison.Ordinal))
-                        Set(job, Stage.Importing, AppleMusic.IsRunning() ? "Apple Music is busy: waiting for it to pick the song up"
-                            : "Open Apple Music to finish adding it", -1);
+                    var waiting = DateTime.Now - job.CopiedAt;
+                    if (waiting.TotalSeconds > 20)
+                    {
+                        if (apps == null) apps = SendCheck.Running.Now();
+                        var problem = SendCheck.Stalled(copy, waiting, apps);
+                        if (problem.Title != null) AppleMusicProblem = problem;
+                        if (job.Message != problem.Status) Set(job, Stage.Importing, problem.Status, -1);
+                    }
                     continue;
                 }
                 if (AppleMusic.Rejected(copy))
@@ -738,6 +762,7 @@ namespace YouTubeMp3
                         "Apple Music moved it to its \"Not Added\" folder. Retry, or add it from Apple Music's menu.", copy);
                     continue;
                 }
+                if (AppleMusicProblem != null && !AppleMusicProblem.Blocks) AppleMusicProblem = null;
                 if (!String.IsNullOrEmpty(job.VideoId)) sent.Add(job.VideoId);
                 string group = job.Group;
                 if (group != null) groups.Add(group);
@@ -747,8 +772,8 @@ namespace YouTubeMp3
                     catch (IOException) { }
                     catch (UnauthorizedAccessException) { }
                 }
-                Set(job, Stage.Done, "In Apple Music" + (group != null ? " · " + group : ""), -1);
-                if (job.NewGroup != null && NewGroupAdded != null) NewGroupAdded(job.NewGroup);
+                string playlist = (job.Playlist ?? "").Trim();
+                Set(job, Stage.Done, "In Apple Music" + (group != null ? " · " + group : "") + (playlist.Length > 0 ? " · " + playlist : ""), -1);
                 if (job.Resend && ResentAdded != null) ResentAdded(job);
             }
         }

@@ -258,7 +258,8 @@ namespace YouTubeMp3
                 g.DrawArc(sheen, c.X - r * 0.75f, c.Y - r * 0.75f, r * 1.5f, r * 1.5f, angle + 180, 50);
             }
             float label = r * 0.38f;
-            using (var brush = new SolidBrush(spinning ? Theme.Accent : Theme.Mix(Theme.Accent, Vinyl, 0.55f)))
+            // The label is YouTube red #FF0000, like the app icon, whether the disc spins or not.
+            using (var brush = new SolidBrush(Theme.Accent))
                 g.FillEllipse(brush, c.X - label, c.Y - label, label * 2, label * 2);
             using (var hole = new SolidBrush(Theme.Background)) g.FillEllipse(hole, c.X - 2.5f, c.Y - 2.5f, 5, 5);
         }

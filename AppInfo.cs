@@ -9,7 +9,7 @@ namespace YouTubeMp3
     internal static class AppInfo
     {
         internal const string Name = "YouTube CarPlay Sync";
-        internal const string Version = "1.3.0";
+        internal const string Version = "1.4.0";
         internal const string FileVersion = Version + ".0";
     }
 }

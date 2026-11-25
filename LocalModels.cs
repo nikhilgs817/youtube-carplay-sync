@@ -32,32 +32,114 @@ namespace YouTubeMp3
         public string AppleMusicFolder { get; set; }
         public bool? RemoveAfterImport { get; set; }
         public string WebSearchKey { get; set; }   // Ollama web search key, encrypted for this Windows user (DPAPI)
+        public string AiProvider { get; set; }     // None, Ollama, vLLM, Claude, ChatGPT, Gemini or Grok
+        public Dictionary<string, string> Models { get; set; }      // the model picked for each provider
+        public Dictionary<string, string> Endpoints { get; set; }   // the server address for each local provider
+        public Dictionary<string, string> ApiKeys { get; set; }     // API keys, each encrypted for this Windows user (DPAPI)
+        public string DefaultPlaylist { get; set; }
+        public List<string> KnownPlaylists { get; set; }
         private static readonly object Gate = new object();
 
+        // The way to connect AI. Settings from before 1.4 had an on/off switch and Ollama or vLLM.
+        [ScriptIgnore]
+        public string ActiveProvider
+        {
+            get
+            {
+                if (!String.IsNullOrEmpty(AiProvider) && AiProviders.All.Contains(AiProvider)) return AiProvider;
+                if (AiEnabled == false) return AiProviders.None;
+                return Provider == LocalModels.Vllm ? LocalModels.Vllm : LocalModels.Ollama;
+            }
+        }
+
+        public string ModelFor(string provider)
+        {
+            string found;
+            if (Models != null && Models.TryGetValue(provider, out found) && !String.IsNullOrWhiteSpace(found)) return found.Trim();
+            // Before 1.4 one model was kept, for the local provider in use.
+            if (AiProviders.IsLocal(provider) && (Provider ?? LocalModels.Ollama) == provider && !String.IsNullOrWhiteSpace(Model)) return Model.Trim();
+            return "";
+        }
+
+        public void SetModel(string provider, string model)
+        {
+            if (Models == null) Models = new Dictionary<string, string>();
+            Models[provider] = (model ?? "").Trim();
+        }
+
+        public string EndpointFor(string provider)
+        {
+            string found;
+            if (Endpoints != null && Endpoints.TryGetValue(provider, out found) && !String.IsNullOrWhiteSpace(found)) return found.Trim();
+            if ((Provider ?? LocalModels.Ollama) == provider && !String.IsNullOrWhiteSpace(Endpoint)) return Endpoint.Trim();
+            return LocalModels.DefaultEndpoint(provider);
+        }
+
+        public void SetEndpoint(string provider, string address)
+        {
+            if (Endpoints == null) Endpoints = new Dictionary<string, string>();
+            Endpoints[provider] = (address ?? "").Trim();
+        }
+
+        // Keys are stored only encrypted with Windows DPAPI for the signed-in user: another Windows account, or a copy of
+        // models.json on another PC, can't read them. They are never written to a log or shown again in full.
+        public string GetKey(string provider)
+        {
+            string stored;
+            if (ApiKeys == null || !ApiKeys.TryGetValue(provider, out stored)) return "";
+            return Unprotect(stored);
+        }
+
+        public void SetKey(string provider, string key)
+        {
+            if (ApiKeys == null) ApiKeys = new Dictionary<string, string>();
+            if (String.IsNullOrWhiteSpace(key)) ApiKeys.Remove(provider);
+            else ApiKeys[provider] = Protect(key.Trim());
+        }
+
+        [ScriptIgnore]
+        public string Playlist { get { return (DefaultPlaylist ?? "").Trim(); } }
+
+        // Playlist names used before, for the suggestions in Review tags. The most recent first.
+        public void RememberPlaylist(string name)
+        {
+            name = (name ?? "").Trim();
+            if (name.Length == 0) return;
+            if (KnownPlaylists == null) KnownPlaylists = new List<string>();
+            KnownPlaylists.RemoveAll(n => String.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+            KnownPlaylists.Insert(0, name);
+            if (KnownPlaylists.Count > 40) KnownPlaylists.RemoveRange(40, KnownPlaylists.Count - 40);
+        }
+
+        internal static string Protect(string value)
+        {
+            return Convert.ToBase64String(System.Security.Cryptography.ProtectedData.Protect(
+                Encoding.UTF8.GetBytes(value), null, System.Security.Cryptography.DataProtectionScope.CurrentUser));
+        }
+
+        internal static string Unprotect(string stored)
+        {
+            if (String.IsNullOrEmpty(stored)) return "";
+            try
+            {
+                return Encoding.UTF8.GetString(System.Security.Cryptography.ProtectedData.Unprotect(Convert.FromBase64String(stored), null,
+                    System.Security.Cryptography.DataProtectionScope.CurrentUser));
+            }
+            catch (FormatException) { return ""; }
+            catch (System.Security.Cryptography.CryptographicException) { return ""; }
+            catch (PlatformNotSupportedException) { return ""; }
+        }
+
         [ScriptIgnore] public bool AutoUpdateTools { get { return AutoUpdate != false; } }
-        [ScriptIgnore] public bool UseAi { get { return AiEnabled != false; } }
+        [ScriptIgnore] public bool UseAi { get { return ActiveProvider != AiProviders.None; } }
         [ScriptIgnore] public bool UseArtwork { get { return Artwork != false; } }
         [ScriptIgnore] public bool RemoveCopy { get { return RemoveAfterImport != false; } }
 
         [ScriptIgnore]
         public string WebKey
         {
-            get
-            {
-                if (String.IsNullOrEmpty(WebSearchKey)) return "";
-                try
-                {
-                    return Encoding.UTF8.GetString(System.Security.Cryptography.ProtectedData.Unprotect(Convert.FromBase64String(WebSearchKey), null,
-                        System.Security.Cryptography.DataProtectionScope.CurrentUser));
-                }
-                catch (FormatException) { return ""; }
-                catch (System.Security.Cryptography.CryptographicException) { return ""; }
-            }
-            set
-            {
-                WebSearchKey = String.IsNullOrWhiteSpace(value) ? "" : Convert.ToBase64String(System.Security.Cryptography.ProtectedData.Protect(
-                    Encoding.UTF8.GetBytes(value.Trim()), null, System.Security.Cryptography.DataProtectionScope.CurrentUser));
-            }
+            get { return Unprotect(WebSearchKey); }
+            set { WebSearchKey = String.IsNullOrWhiteSpace(value) ? "" : Protect(value.Trim()); }
         }
         [ScriptIgnore] public int Timeout { get { return AiTimeout <= 0 ? 120 : Math.Min(600, AiTimeout); } }
 
@@ -97,7 +179,7 @@ namespace YouTubeMp3
         }
     }
 
-    internal sealed class LocalModels : IDisposable
+    internal sealed class LocalModels : ISongModel
     {
         public const string Ollama = "Ollama";
         public const string Vllm = "vLLM";
@@ -112,7 +194,7 @@ namespace YouTubeMp3
         private readonly HttpClient http;
         private readonly bool ollama;
         private readonly Uri endpoint;
-        public int ClassifyTimeout = 180;
+        public int ClassifyTimeout { get; set; }
 
         public static string DefaultEndpoint(string provider)
         {
@@ -122,6 +204,7 @@ namespace YouTubeMp3
         public LocalModels(string provider, string address, string apiKey, HttpMessageHandler handler = null)
         {
             ollama = provider != Vllm;
+            ClassifyTimeout = 180;
             Uri uri;
             if (!Uri.TryCreate(address.Trim(), UriKind.Absolute, out uri) ||
                 (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||

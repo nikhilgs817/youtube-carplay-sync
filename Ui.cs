@@ -25,11 +25,13 @@ namespace YouTubeMp3
         public static readonly Color Ink2 = Color.FromArgb(72, 86, 110);
         public static readonly Color Muted = Color.FromArgb(88, 101, 124);
         public static readonly Color Faint = Color.FromArgb(100, 113, 136);
-        public static readonly Color Accent = Color.FromArgb(255, 61, 87);         // 10%: red #FF3D57
-        public static readonly Color Accent2 = Color.FromArgb(210, 36, 62);        // red text on the light canvas
-        public static readonly Color AccentFill = Color.FromArgb(217, 38, 64);     // button fill, white text passes AA
-        public static readonly Color AccentHover = Color.FromArgb(232, 46, 72);
-        public static readonly Color AccentPressed = Color.FromArgb(190, 30, 54);
+        // 10%: YouTube red #FF0000, the app icon's red. Pure red is for shapes (the running step, the vinyl centre, focus
+        // rings); text and button fills use deeper YouTube reds so white and slate text keep WCAG AA contrast.
+        public static readonly Color Accent = Color.FromArgb(255, 0, 0);           // #FF0000 YouTube red
+        public static readonly Color Accent2 = Color.FromArgb(204, 0, 0);          // #CC0000 red text on the canvas (4.9:1)
+        public static readonly Color AccentFill = Color.FromArgb(230, 0, 0);       // #E60000 button fill, white text 4.8:1
+        public static readonly Color AccentHover = Color.FromArgb(238, 0, 0);      // #EE0000, white text 4.5:1
+        public static readonly Color AccentPressed = Color.FromArgb(204, 0, 0);
         public static readonly Color AccentInk = Color.White;
         public static readonly Color AccentSoft = Mix(Accent, Background, 0.14f);
         public static readonly Color Pass = Color.FromArgb(22, 138, 90);
@@ -1028,7 +1030,25 @@ namespace YouTubeMp3
             word = verdict; color = tone; shape = mark;
             Message.Text = text;
             Padding = new Padding(Theme.S(32) + Theme.PillWidth(word), Theme.S(12), Theme.S(20), Theme.S(12));
+            FitText();
             Invalidate();
+        }
+
+        // Grow to show a longer message (a problem and its fix) in full rather than cutting it off.
+        private void FitText()
+        {
+            int width = Width - Padding.Horizontal - (actions.Visible ? actions.PreferredSize.Width : 0) - Theme.S(8);
+            if (width < Theme.S(120)) return;
+            int text = TextRenderer.MeasureText(Message.Text ?? "", Message.Font, new Size(width, Int32.MaxValue),
+                TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix).Height;
+            int wanted = Math.Max(Theme.S(70), text + Theme.S(38));
+            if (Height != wanted) Height = wanted;
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            FitText();
         }
 
         protected override void OnPaint(PaintEventArgs e)

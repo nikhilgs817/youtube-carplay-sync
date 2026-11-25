@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.4.0
+
+### Added
+- **Default playlist.** Settings › Apple Music › **Default playlist** (for example `CarPlay`). Every song goes to it unless you pick another one. Apple Music for Windows gives other apps no way to add songs to a playlist, so the app writes the name into each song's **Comments** tag, and one Smart Playlist per name (*Comments is CarPlay*, Live updating) collects the songs. **Copy name** copies the name for the Smart Playlist window.
+- **Playlist in Review tags.** A **Playlist for all songs** field with **Use for all**, and a **Playlist** column to change it per song. It suggests names you've used before.
+- **The "i" page.** An **i** button on the main screen and in Settings (or press **F1**) opens *How it works*: every feature, the playlist setup, the AI choices and what to do when a song doesn't arrive.
+- **AI choice in Settings › AI for song details**, in three numbered steps:
+  1. **How to connect AI:** No AI, Ollama, vLLM, **Claude**, **ChatGPT**, **Gemini** or **Grok**.
+  2. **What that needs:** a server address (local) or an API key (cloud). Keys are saved encrypted for your Windows account (DPAPI), one per service, and never written to a log.
+  3. **Model:** sensible defaults (for example `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`), and **Test & load models** lists every model your key or server can use.
+- **No AI? Built-in rules.** With **No AI**, or when the AI can't answer, language and genre come from rules: the script of the title (Gurmukhi, Devanagari, Tamil, Telugu and more), words like *bhajan*, *remix* or *lofi*, well-known labels such as T-Series or Speed Records, and the catalogue's genre. Songs tagged this way say **Without a model, accuracy is low** and show *+ rules* under Info from.
+- **Why a song didn't reach Apple Music, and what to do.** The app checks before it sends (import folder missing, disk almost full, Windows Controlled folder access) and while it waits: **Apple Devices** syncing or backing up a phone, **iTunes** open, Apple Music closed, the file held by antivirus or OneDrive, or Apple Music stuck behind a hidden sign-in or terms window. The main screen shows the cause and the fix; songs that couldn't be sent go back to **Your turn**.
+- Claude Opus and Sonnet retry a declined answer on a fallback model automatically.
+
+### Changed
+- **YouTube red.** The accent is YouTube's `#FF0000` everywhere: buttons, the running step, the vinyl label and the focus ring. Red text on the light canvas uses YouTube's darker `#CC0000` so it stays readable (4.9:1).
+- The "new playlists / Copy group names" banner is gone. Genres still read `Language - Genre`, for example `Hindi - Romantic`.
+- Settings' "Local AI" card is now **AI for song details**. Settings from 1.3 carry over: Ollama or vLLM stays selected, and AI switched off becomes **No AI**.
+
+### Fixed
+- Review tags no longer accepts a year like `20x`: the cell turns red and Send waits until it's a four-digit year.
+- Editing the artist in Review tags now updates the album artist too, so Apple Music doesn't split an album.
+- Unticked songs in Review tags keep their edits.
+- The video link that yt-dlp left in a custom `comment` tag is removed, so it never shows as the song's Comments.
+- Long banner messages wrap instead of being cut off.
+
 ## 1.3.0
 
 ### Changed
