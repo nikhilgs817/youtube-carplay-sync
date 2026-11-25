@@ -1,46 +1,75 @@
-# YouTube MP3 for Windows
+# YouTube CarPlay Sync
 
-Download MP3 audio and organize a music collection with a model running on Ollama or a self-hosted vLLM server. Use the downloader for audio you own or have permission to download.
+Find songs, build a tagged Windows music library, and get your tracks into Apple Music, your iPhone and CarPlay. Use the downloader only for audio you own or have permission to download. This project is not affiliated with YouTube or Apple.
 
 ## Install on Windows
 
-Download `YouTube-MP3-Setup.exe` from [Releases](https://github.com/nikhilgs817/youtube-mp3-windows/releases). Open it and select **Install app**. Setup installs for your Windows account, adds a Start menu shortcut, and registers the app in **Settings → Apps → Installed apps**. Run a newer installer to update. Uninstall keeps your music and model preferences. A portable ZIP is also available.
+Open `YouTube-CarPlay-Sync-Setup.exe` and select **Install app**. Setup:
 
-## Download MP3 audio
+- installs the app for your Windows account and adds Start menu and desktop shortcuts;
+- downloads the audio tools it needs (yt-dlp, FFmpeg and Deno, about 150 MB) into the app's own folder, so there is no separate tools step;
+- registers the app in **Settings › Apps › Installed apps**.
 
-1. Open **Download MP3**. Select **Setup tools** on first use and follow the WinGet prompts.
-2. Paste links or select **Load .txt** to read a Notepad file with one URL per line.
-3. Choose an output folder and select **Save MP3**. The default is `Music\YouTube MP3`.
+Run a newer installer to update. Updating and uninstalling keep your music, waiting songs and settings. Uninstall removes the downloaded tools.
 
-Watch, `youtu.be`, Shorts, YouTube Music, and individual live-video links are accepted. The app saves one video per URL, ignores blank lines, and handles each video ID once per batch. If a link fails, the batch continues. If a filename already exists, the next copy gets a numbered suffix.
+If the tool download fails during setup (for example while offline), the app installs anyway and shows **Install tools** on its first screen.
 
-## Organize music with a local model
+## How it works: one screen
 
-1. Start your model server. In **Organize music**, select **Ollama** (`http://127.0.0.1:11434`) or **vLLM** (`http://127.0.0.1:8000/v1`). Change the address when the server runs on another machine. vLLM supports an optional session-only API key and requires a chat model that supports JSON-schema outputs.
-2. Select **Load models** and choose a model. For Ollama, download a model before loading the list. Cloud-tagged Ollama models are excluded.
-3. Select a source music folder or choose **Use downloads**. Choose an output folder and group by **Genre**, **Language**, or **Language + genre**.
-4. Select **Preview sorting**. Review or edit the suggested labels, then select **Copy selected** to write the organized copies. Example output folders include `Hindi-Pop` and `English-Rock`. Files with the same name and identical contents are skipped.
+Paste one or more YouTube links (one per line) and select **Add songs**, or type a song name and press Enter, then pick the right match. **Load .txt** reads a file with one link per line, and Ctrl+V pastes anywhere in the window.
 
-The app recursively scans the source folder for common audio formats, including MP3, M4A, FLAC and WAV. The selected server receives the filename and available song tags. Sorting quality depends on those fields and the model. The audio stays on your PC, source files stay untouched, and the model can return `Unknown` when tags are inconclusive.
+Every song then moves through five steps on its own, shown live on its card:
+
+| Step | What happens |
+|---|---|
+| Download | yt-dlp fetches the audio. A ring around the step shows the percentage. |
+| Convert | FFmpeg converts it to MP3 at the quality set in Settings. |
+| Cover art | Square cover art is embedded. |
+| Song info | Title, artist, album or film, year, track and official cover art from Apple's catalogue (MusicBrainz as fallback); your local model picks the match and sets language and genre. |
+| Apple Music | Waits for you, then imports the song. |
+
+The running step pulses red and the vinyl disc spins. Finished steps fill in.
+
+**Your turn.** When songs finish the first four steps they wait at **Your turn**. Select **Review & send**, check title, artist, album, year, language and genre for each song in one table (the last column says where the info came from), and select **Send**. Fix tags here: Apple Music reads them only when it imports a song. Untick a song to keep it waiting. Waiting songs are saved and survive closing the app or a restart.
+
+**Into Apple Music.** The app writes the tags (the Genre tag becomes `Language - Genre`, for example `Hindi - Romantic`) and copies the MP3 into Apple Music's *Automatically Add to Apple Music* folder. It then confirms that Apple Music took the song (filed under *Artist › Album*) and removes the app's own copy. If Apple Music rejects a file, the row says so. To fix a song already in Apple Music, right-click it › **Look up song info again (and re-send)**, then delete the old copy in Apple Music. Apple Music must be running to finish an import.
+
+**Playlists.** When a song starts a new group, a banner says so. Create one Smart Playlist for it in Apple Music (+ next to Playlists › New Smart Playlist › *Genre is Hindi - Romantic*, with Live updating on). Later songs in that group join it by themselves.
+
+Failed songs say why and offer **Retry**; right-click a song for more actions. A link from a mix or playlist (`&list=…`) downloads only that one video, and songs already in Apple Music are not sent twice. When YouTube changes something, the app updates yt-dlp and retries automatically.
+
+## iPhone and CarPlay
+
+1. **Sync your iPhone** in Apple Devices › Music. Use a cable the first time, then turn on **Show this iPhone when on Wi-Fi** to sync wirelessly.
+2. **Play in CarPlay** with Siri: "Hey Siri, play my Hindi Romantic playlist."
+
+No Apple Music subscription is required.
+
+[Smart Playlists](https://support.apple.com/guide/music-windows/mus1712973f4/windows) · [Apple Devices music sync](https://support.apple.com/guide/devices-windows/mchlbf6a1fab/windows)
+
+## Settings (gear, top right)
+
+- **Audio tools**: version and status of yt-dlp, FFmpeg and Deno, with **Install tools** / **Repair tools**, **Update yt-dlp** and **Open tools folder**. The tools live in `%LOCALAPPDATA%\YouTubeMP3\tools`.
+- **Downloads**: the save folder (default `Music\YouTube MP3`), MP3 quality, cover art, and **Use YouTube sign-in from Firefox** for videos where YouTube asks you to sign in.
+- **Local AI**: **Ollama** (`http://127.0.0.1:11434`) or **vLLM** (`http://127.0.0.1:8000/v1`); select **Test & load models**. Only titles and existing tags are sent to your server. Good models for Indian-language titles: `qwen3:30b-a3b`, `gemma3:27b`. **Ollama web search key** (optional, free from ollama.com › Settings › Keys) adds a web search when the music catalogues find nothing; the song's title and channel are sent to ollama.com.
+- **Apple Music**: the *Automatically Add to Apple Music* folder. It's found automatically (usually `Music\Apple Music\Media\Automatically Add to Apple Music`); set it here only if yours is elsewhere. **Remove the app's copy once Apple Music has the song** is on by default.
 
 ## Build from source
 
-Run this in PowerShell on Windows 10 or 11 with .NET Framework 4.8 or later.
+On Windows 10 or 11 with .NET Framework 4.8, double-click `Build.cmd`, or run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-The build creates `dist\YouTube-MP3-Setup.exe` and `dist\YouTube-MP3-Windows.zip`. It uses the Windows .NET Framework compiler and has no NuGet dependencies.
+The build creates `dist\YouTube-CarPlay-Sync-Setup.exe` and `dist\YouTube-CarPlay-Sync-Windows.zip` with the Windows .NET Framework compiler. There are no NuGet dependencies.
 
-## Audio utilities
+## Where things are stored
 
-Setup uses Windows Package Manager to install [yt-dlp](https://github.com/yt-dlp/yt-dlp), [FFmpeg](https://ffmpeg.org/), and [Deno](https://deno.com/). The app also looks for those executables in its own `tools` folder, alongside the EXE, and on `PATH`. It can use Node.js 22 or newer when Deno is unavailable. Keep `ffmpeg.exe` and `ffprobe.exe` together if you install FFmpeg manually.
-
-If YouTube changes break downloads, update the utilities from the extracted app folder and retry.
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup-tools.ps1 -Update
-```
-
-The app uses yt-dlp's audio download and FFmpeg conversion. Private, unavailable, and currently streaming videos may fail or take longer to finish. The Results column shows the downloader's error when available.
+| What | Where |
+|---|---|
+| App | `%LOCALAPPDATA%\Programs\YouTube MP3\YouTube-MP3.exe` |
+| Audio tools | `%LOCALAPPDATA%\YouTubeMP3\tools` |
+| Settings | `%LOCALAPPDATA%\YouTubeMP3\models.json` |
+| Library tags | `%LOCALAPPDATA%\YouTubeMP3\Catalogs` (copied once from the 1.2 location) |
+| Downloads | `Music\YouTube MP3` unless you choose another folder |

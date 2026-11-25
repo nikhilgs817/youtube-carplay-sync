@@ -21,6 +21,58 @@ namespace YouTubeMp3
         public string Endpoint { get; set; }
         public string Model { get; set; }
         public string Grouping { get; set; }
+        public string DownloadFolder { get; set; }
+        public string Quality { get; set; }
+        public bool? Artwork { get; set; }
+        public bool? AutoUpdate { get; set; }
+        public bool? AiEnabled { get; set; }
+        public int AiTimeout { get; set; }
+        public string ExportFolder { get; set; }
+        public string CookiesBrowser { get; set; }
+        public string AppleMusicFolder { get; set; }
+        public bool? RemoveAfterImport { get; set; }
+        public string WebSearchKey { get; set; }   // Ollama web search key, encrypted for this Windows user (DPAPI)
+        private static readonly object Gate = new object();
+
+        [ScriptIgnore] public bool AutoUpdateTools { get { return AutoUpdate != false; } }
+        [ScriptIgnore] public bool UseAi { get { return AiEnabled != false; } }
+        [ScriptIgnore] public bool UseArtwork { get { return Artwork != false; } }
+        [ScriptIgnore] public bool RemoveCopy { get { return RemoveAfterImport != false; } }
+
+        [ScriptIgnore]
+        public string WebKey
+        {
+            get
+            {
+                if (String.IsNullOrEmpty(WebSearchKey)) return "";
+                try
+                {
+                    return Encoding.UTF8.GetString(System.Security.Cryptography.ProtectedData.Unprotect(Convert.FromBase64String(WebSearchKey), null,
+                        System.Security.Cryptography.DataProtectionScope.CurrentUser));
+                }
+                catch (FormatException) { return ""; }
+                catch (System.Security.Cryptography.CryptographicException) { return ""; }
+            }
+            set
+            {
+                WebSearchKey = String.IsNullOrWhiteSpace(value) ? "" : Convert.ToBase64String(System.Security.Cryptography.ProtectedData.Protect(
+                    Encoding.UTF8.GetBytes(value.Trim()), null, System.Security.Cryptography.DataProtectionScope.CurrentUser));
+            }
+        }
+        [ScriptIgnore] public int Timeout { get { return AiTimeout <= 0 ? 120 : Math.Min(600, AiTimeout); } }
+
+        // Load, change and save in one step, so pages that edit different fields never overwrite each other.
+        public static void Update(Action<Preferences> change)
+        {
+            lock (Gate)
+            {
+                var prefs = Load();
+                change(prefs);
+                try { prefs.Save(); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
 
         public static Preferences Load()
         {
@@ -60,6 +112,7 @@ namespace YouTubeMp3
         private readonly HttpClient http;
         private readonly bool ollama;
         private readonly Uri endpoint;
+        public int ClassifyTimeout = 180;
 
         public static string DefaultEndpoint(string provider)
         {
@@ -122,6 +175,8 @@ namespace YouTubeMp3
             if (ollama)
             {
                 payload.Add("format", schema);
+                // Thinking models (Qwen3 and others) would spend the answer budget reasoning; a label needs no reasoning.
+                payload.Add("think", false);
                 payload.Add("options", new { temperature = 0, num_predict = 2048 });
             }
             else
@@ -130,7 +185,18 @@ namespace YouTubeMp3
                 payload.Add("temperature", 0);
                 payload.Add("max_tokens", 2048);
             }
-            var reply = await SendAsync(HttpMethod.Post, ollama ? "api/chat" : "chat/completions", payload, 180, cancel).ConfigureAwait(false);
+            object reply = null;
+            bool retryWithoutThink = false;
+            try { reply = await SendAsync(HttpMethod.Post, ollama ? "api/chat" : "chat/completions", payload, ClassifyTimeout, cancel).ConfigureAwait(false); }
+            catch (InvalidOperationException ex)
+            {
+                // Older Ollama builds may reject the think switch; ask again without it.
+                if (!ollama || !payload.ContainsKey("think") || !ex.Message.Contains("HTTP 400")) throw;
+                payload.Remove("think");
+                retryWithoutThink = true;
+            }
+            if (retryWithoutThink)
+                reply = await SendAsync(HttpMethod.Post, "api/chat", payload, ClassifyTimeout, cancel).ConfigureAwait(false);
             var choices = Get(reply, "choices") as object[];
             object message = ollama ? Get(reply, "message") : choices == null ? null : Get(choices.FirstOrDefault(), "message");
             var text = Get(message, "content") as string;
@@ -142,6 +208,47 @@ namespace YouTubeMp3
             if (genre == null || language == null)
                 throw new InvalidOperationException("The selected model did not return genre and language.");
             return new Category(genre, language);
+        }
+
+        // Asks the model for one JSON object matching `schema`. Used by the song-info lookup to pick the right
+        // catalogue match. Same request shape and "think" fallback as ClassifyAsync.
+        public async Task<IDictionary<string, object>> AskJsonAsync(string model, string system, object input, object schema, CancellationToken cancel)
+        {
+            var payload = new Dictionary<string, object>
+            {
+                { "model", model }, { "stream", false },
+                { "messages", new[] { new { role = "system", content = system }, new { role = "user", content = json.Serialize(input) } } }
+            };
+            if (ollama)
+            {
+                payload.Add("format", schema);
+                payload.Add("think", false);
+                payload.Add("options", new { temperature = 0, num_predict = 1024 });
+            }
+            else
+            {
+                payload.Add("response_format", new { type = "json_schema", json_schema = new { name = "song_info", strict = true, schema } });
+                payload.Add("temperature", 0);
+                payload.Add("max_tokens", 1024);
+            }
+            object reply = null;
+            bool retryWithoutThink = false;
+            try { reply = await SendAsync(HttpMethod.Post, ollama ? "api/chat" : "chat/completions", payload, ClassifyTimeout, cancel).ConfigureAwait(false); }
+            catch (InvalidOperationException ex)
+            {
+                if (!ollama || !ex.Message.Contains("HTTP 400")) throw;
+                payload.Remove("think");
+                retryWithoutThink = true;
+            }
+            if (retryWithoutThink)
+                reply = await SendAsync(HttpMethod.Post, "api/chat", payload, ClassifyTimeout, cancel).ConfigureAwait(false);
+            var choices = Get(reply, "choices") as object[];
+            object message = ollama ? Get(reply, "message") : choices == null ? null : Get(choices.FirstOrDefault(), "message");
+            var text = Get(message, "content") as string;
+            if (String.IsNullOrWhiteSpace(text)) throw new InvalidOperationException("The model returned an empty answer.");
+            var result = json.DeserializeObject(text.Trim()) as IDictionary<string, object>;
+            if (result == null) throw new InvalidOperationException("The model did not return a JSON object.");
+            return result;
         }
 
         private async Task<object> SendAsync(HttpMethod method, string path, object payload, int timeout, CancellationToken cancel)
